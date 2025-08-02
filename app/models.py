@@ -13,3 +13,5 @@ class MatchResponse(BaseModel):
     mo_ta_ban_than_similarity: float
     ky_nang_similarity: float
     kinh_nghiem_similarity: float
+    hoc_van_similarity: float
+    du_an_similarity: float

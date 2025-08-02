@@ -4,6 +4,7 @@ from sentence_transformers import SentenceTransformer
 import numpy as np
 from dotenv import load_dotenv
 import os
+import json
 
 load_dotenv()
 
@@ -30,6 +31,10 @@ def save_cv_embedding(cv_id, candidate_id, text, section_type):
         column = 'skills_embedding'
     elif section_type == 'kinh_nghiem_lam_viec':
         column = 'experience_embedding'
+    elif section_type == 'hoc_van':
+        column = 'education_embedding'
+    elif section_type == 'du_an':
+        column = 'projects_embedding'
     else:
         column = 'full_text_embedding' 
 
@@ -79,4 +84,29 @@ def get_embedding(table, id_column, id_value, embedding_column):
     result = cursor.fetchone()
     cursor.close()
     conn.close()
-    return result[0] if result else None
+
+    if not result or result[0] is None:
+        return None
+
+    raw = result[0]
+
+    # Nếu là tuple chứa string
+    if isinstance(raw, (tuple, list)) and isinstance(raw[0], str):
+        try:
+            raw = json.loads(raw[0])
+        except Exception:
+            return None
+
+    # Nếu là chuỗi JSON
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return None
+
+    # Cuối cùng: đảm bảo list[float]
+    try:
+        return [float(x) for x in raw]
+    except Exception as e:
+        print(f"⚠️ Error parsing embedding to float: {e}")
+        return None

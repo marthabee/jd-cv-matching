@@ -4,12 +4,13 @@ from app.db import (
     get_db_connection,
     save_cv_embedding,
     save_job_embedding,
-    get_embedding,
+    get_embedding
 )
-from app.utils import calculate_similarity, make_cv_text, clean_text
+from app.utils import calculate_similarity, make_cv_text, clean_text, detect_language, build_reasoning_prompt, call_groq_reasoning
 from sentence_transformers.util import cos_sim
 import numpy as np
 import json
+
 
 app = FastAPI()
 
@@ -113,10 +114,10 @@ async def calculate_match(request: MatchRequest):
         """
         INSERT INTO vector_matches (
             job_id, candidate_id, cv_id, overall_similarity, skills_similarity,
-            experience_similarity, weighted_score, last_calculated, cv_embedding_id,
+            experience_similarity, education_similarity, projects_similarity, weighted_score, last_calculated, cv_embedding_id,
             match_type, computed_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, NOW())
         RETURNING match_id
         """,
         (
@@ -126,6 +127,8 @@ async def calculate_match(request: MatchRequest):
             overall_similarity,
             ky_nang_similarity,
             kinh_nghiem_similarity,
+            hoc_van_similarity,
+            du_an_similarity,
             weighted_score,
             cv_embedding_id,
             'sbert',
@@ -152,21 +155,203 @@ async def calculate_match(request: MatchRequest):
 
 @app.get("/api/v1/ai/similarity")
 async def get_similarity(
-    cv_id: int = Query(..., description="CV ID"),
-    job_id: int = Query(..., description="Job ID"),
-    section_type: str = Query("full_text", description="Loại embedding: full_text, ky_nang, kinh_nghiem_lam_viec,...")
+    cv_id: int = Query(...),
+    job_id: int = Query(...),
+    section_type: str = Query("full_text")
 ):
-    cv_emb = get_embedding("cv_embeddings", "cv_id", cv_id, f"{section_type}_embedding")
-    job_emb = get_embedding("job_embeddings", "job_id", job_id, "full_jd_embedding")
+    conn = get_db_connection()
+    cursor = conn.cursor()
 
-    if not cv_emb or not job_emb:
-        raise HTTPException(status_code=404, detail="Missing embeddings")
+    # mapping section_type -> column
+    column_map = {
+        "full_text": "overall_similarity",
+        "ky_nang": "skills_similarity",
+        "kinh_nghiem_lam_viec": "experience_similarity",
+        "hoc_van": "education_similarity",
+        "du_an": "projects_similarity",
+        "weighted": "weighted_score"
+    }
 
-    similarity = cos_sim(np.array(cv_emb), np.array(job_emb)).item()
+    if section_type not in column_map:
+        raise HTTPException(status_code=400, detail=f"Invalid section_type. Must be one of {list(column_map.keys())}")
+
+    col = column_map[section_type]
+
+    cursor.execute(f"""
+        SELECT {col}
+        FROM vector_matches
+        WHERE cv_id = %s AND job_id = %s
+        ORDER BY last_calculated DESC
+        LIMIT 1
+    """, (cv_id, job_id))
+    
+    result = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    if not result:
+        raise HTTPException(status_code=404, detail="No match result found")
 
     return {
         "cv_id": cv_id,
         "job_id": job_id,
         "section_type": section_type,
-        "cosine_similarity": round(float(similarity), 4)
+        "similarity_score": round(float(result[0]), 4)
+    }
+
+
+@app.get("/api/v1/ai/job-recommendations/{candidate_id}")
+async def recommend_jobs(candidate_id: int, top_k: int = Query(5, ge=1, le=50)):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # --- B1: Lấy CV chính của ứng viên ---
+    cursor.execute("""
+        SELECT cv_id FROM candidate_cvs
+        WHERE candidate_id = %s AND is_primary = TRUE
+        LIMIT 1
+    """, (candidate_id,))
+    row = cursor.fetchone()
+
+    # Nếu không có CV chính → fallback
+    if not row:
+        cursor.execute("""
+            SELECT cv_id FROM candidate_cvs
+            WHERE candidate_id = %s
+            ORDER BY updated_at DESC
+            LIMIT 1
+        """, (candidate_id,))
+        row = cursor.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="No JD found for candidate")
+
+    cv_id = row[0]
+
+    # --- B2: Lấy embedding của CV (full_text) ---
+    cv_emb = get_embedding("cv_embeddings", "cv_id", cv_id, "full_text_embedding")
+    if not cv_emb:
+        raise HTTPException(status_code=404, detail="CV embedding not found")
+
+    # --- B3: Lấy tất cả JD embedding ---
+    cursor.execute("SELECT job_id, full_jd_embedding FROM job_embeddings")
+    jd_rows = cursor.fetchall()
+
+    if not jd_rows:
+        return {"candidate_id": candidate_id, "cv_id": cv_id, "recommendations": []}
+
+    recommendations = []
+
+    for job_id, jd_emb in jd_rows:
+        if not jd_emb:
+            continue
+
+        # --- B4: Nếu đã từng match → lấy overall_similarity ---
+        cursor.execute("""
+            SELECT overall_similarity FROM vector_matches
+            WHERE cv_id = %s AND job_id = %s
+            ORDER BY last_calculated DESC
+            LIMIT 1
+        """, (cv_id, job_id))
+        match = cursor.fetchone()
+
+        if match:
+            sim = match[0]
+        else:
+            # --- Nếu chưa có, tính cosine mới ---
+            try:
+                sim = cos_sim(np.array(cv_emb), np.array(jd_emb)).item()
+            except Exception as e:
+                print(f"⚠️ Cosine error for job_id={job_id}: {e}")
+                continue
+
+        recommendations.append((job_id, sim))
+
+    cursor.close()
+    conn.close()
+
+    # --- B5: Sắp xếp giảm dần & trả về Top-K ---
+    recommendations.sort(key=lambda x: x[1], reverse=True)
+    top_k_recs = recommendations[:top_k]
+
+    return {
+        "candidate_id": candidate_id,
+        "cv_id": cv_id,
+        "top_k": top_k,
+        "recommendations": [
+            {"job_id": job_id, "overall_similarity": round(score, 4)}
+            for job_id, score in top_k_recs
+        ]
+    }
+
+
+@app.get("/api/v1/ai/match-analysis/{application_id}")
+async def match_reasoning(application_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT a.cv_id, a.job_id,
+               vm.overall_similarity, vm.skills_similarity,
+               vm.experience_similarity, vm.education_similarity,
+               cc.parsed_content,
+               j.description, j.requirements
+        FROM applications a
+        JOIN vector_matches vm ON vm.cv_id = a.cv_id AND vm.job_id = a.job_id
+        JOIN cv_content cc ON cc.cv_id = a.cv_id
+        JOIN jobs j ON j.job_id = a.job_id
+        WHERE a.application_id = %s
+    """, (application_id,))
+
+    row = cursor.fetchone()
+
+    if not row:
+        cursor.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    (
+        cv_id, job_id,
+        overall, skills_sim, exp_sim, edu_sim,
+        parsed_content, jd_desc, jd_reqs
+    ) = row
+
+    parsed = json.loads(parsed_content) if isinstance(parsed_content, str) else parsed_content
+    jd_text = f"{jd_desc}\n\nRequirements:\n{jd_reqs}"
+    cv_text = make_cv_text(parsed)
+
+    sim_scores = {
+        "overall": overall,
+        "skills": skills_sim,
+        "experience": exp_sim,
+        "education": edu_sim
+    }
+
+    combined_text = f"{cv_text}\n\n{jd_text}"
+    lang = detect_language(combined_text)
+
+    prompt = build_reasoning_prompt(cv_text, jd_text, sim_scores, lang)
+    reasoning = call_groq_reasoning(prompt)
+
+    ai_analysis_data = {
+        "language": lang,
+        "match_scores": sim_scores,
+        "reasoning": reasoning
+    }
+
+    cursor.execute(
+        "UPDATE applications SET ai_analysis = %s, updated_at = NOW() WHERE application_id = %s",
+        (json.dumps(ai_analysis_data), application_id)
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return {
+        "application_id": application_id,
+        "cv_id": cv_id,
+        "job_id": job_id,
+        "language_detected": lang,
+        **sim_scores,
+        "reasoning": reasoning
     }
