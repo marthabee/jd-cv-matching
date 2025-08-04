@@ -179,25 +179,31 @@ CREATE TABLE cv_embeddings (
     skills_embedding VECTOR(384),
     experience_embedding VECTOR(384),
     education_embedding VECTOR(384),
-    projects_embedding VECTOR(384),
     model_version VARCHAR(100),
     content_hash VARCHAR(64),
     confidence_score DECIMAL(4,3),
-    section_type VARCHAR(50),
     created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW()
+    updated_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE (cv_id, candidate_id)
 );
+
 
 CREATE TABLE job_embeddings (
     embedding_id BIGSERIAL PRIMARY KEY,
     job_id BIGINT REFERENCES jobs(job_id) ON DELETE CASCADE,
     full_jd_embedding VECTOR(384),
     requirements_embedding VECTOR(384),
+    responsibilities_embedding VECTOR(384),
+    education_embedding VECTOR(384),
+    experience_embedding VECTOR(384),
+    language_embedding VECTOR(384),
     skills_embedding VECTOR(384),
     model_version VARCHAR(100),
-    embedding_created_at TIMESTAMP,
-    created_at TIMESTAMP DEFAULT NOW()
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE (job_id)
 );
+
 
 CREATE TABLE vector_matches (
     match_id BIGSERIAL PRIMARY KEY,
@@ -208,7 +214,6 @@ CREATE TABLE vector_matches (
     skills_similarity DECIMAL(5,4),
     experience_similarity DECIMAL(5,4),
     education_similarity DECIMAL(5,4),
-    projects_similarity DECIMAL(5,4),
     weighted_score DECIMAL(5,4),
     last_calculated TIMESTAMP,
     cv_embedding_id BIGINT REFERENCES cv_embeddings(embedding_id),
@@ -465,16 +470,6 @@ CREATE TABLE user_preference_embeddings (
     embedding VECTOR(1536),
     model_version VARCHAR(50),
     generated_at TIMESTAMP DEFAULT NOW()
-);
-
-CREATE TABLE chat_feedback (
-    feedback_id BIGSERIAL PRIMARY KEY,
-    user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
-    message_id BIGINT REFERENCES chat_messages(message_id) ON DELETE CASCADE,
-    rating INT CHECK (rating BETWEEN 1 AND 5),
-    comment TEXT,
-    feedback_type VARCHAR(20) CHECK (feedback_type IN ('LIKE', 'DISLIKE', 'REPORT_ISSUE')),
-    created_at TIMESTAMP DEFAULT NOW()
 );
 
 

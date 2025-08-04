@@ -14,4 +14,3 @@ class MatchResponse(BaseModel):
     ky_nang_similarity: float
     kinh_nghiem_similarity: float
     hoc_van_similarity: float
-    du_an_similarity: float

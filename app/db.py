@@ -20,35 +20,21 @@ def get_db_connection():
 # Khởi tạo mô hình SBERT
 model = SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')
 
-def save_cv_embedding(cv_id, candidate_id, text, section_type):
+def save_cv_embedding(cv_id, candidate_id, text, column):
     embedding = model.encode(text, normalize_embeddings=True).tolist()
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Lưu vào đúng cột theo section_type
-    if section_type == 'full_text':
-        column = 'full_text_embedding'
-    elif section_type == 'ky_nang':
-        column = 'skills_embedding'
-    elif section_type == 'kinh_nghiem_lam_viec':
-        column = 'experience_embedding'
-    elif section_type == 'hoc_van':
-        column = 'education_embedding'
-    elif section_type == 'du_an':
-        column = 'projects_embedding'
-    else:
-        column = 'full_text_embedding' 
-
     cursor.execute(
         f"""
-        INSERT INTO cv_embeddings (cv_id, candidate_id, {column}, model_version, section_type)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (cv_id, candidate_id, section_type) DO UPDATE 
+        INSERT INTO cv_embeddings (cv_id, candidate_id, {column}, model_version, created_at)
+        VALUES (%s, %s, %s, %s, NOW())
+        ON CONFLICT (cv_id, candidate_id) DO UPDATE 
         SET {column} = EXCLUDED.{column},
             model_version = EXCLUDED.model_version,
-            created_at = NOW()
+            updated_at = NOW()
         RETURNING embedding_id
         """,
-        (cv_id, candidate_id, embedding, 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2', section_type)
+        (cv_id, candidate_id, embedding, 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')
     )
     embedding_id = cursor.fetchone()[0]
     conn.commit()
@@ -56,26 +42,31 @@ def save_cv_embedding(cv_id, candidate_id, text, section_type):
     conn.close()
     return embedding_id
 
-def save_job_embedding(job_id, text, section_type):
+
+def save_job_embedding(job_id, text, column):
     embedding = model.encode(text, normalize_embeddings=True).tolist()
     conn = get_db_connection()
     cursor = conn.cursor()
+
     cursor.execute(
-        """
-        INSERT INTO job_embeddings (job_id, full_jd_embedding, model_version, created_at)
+        f"""
+        INSERT INTO job_embeddings (job_id, {column}, model_version, created_at)
         VALUES (%s, %s, %s, NOW())
         ON CONFLICT (job_id) DO UPDATE 
-        SET full_jd_embedding = EXCLUDED.full_jd_embedding,
-            created_at = NOW()
+        SET {column} = EXCLUDED.{column},
+            model_version = EXCLUDED.model_version,
+            updated_at = NOW()
         RETURNING embedding_id
         """,
         (job_id, embedding, 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')
     )
+
     embedding_id = cursor.fetchone()[0]
     conn.commit()
     cursor.close()
     conn.close()
     return embedding_id
+
 
 def get_embedding(table, id_column, id_value, embedding_column):
     conn = get_db_connection()

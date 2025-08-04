@@ -26,6 +26,48 @@ async def calculate_match(request: MatchRequest):
         raise HTTPException(status_code=404, detail="CV not found")
     candidate_id = result[0]
 
+    # Lấy JD từ bảng jobs
+    cursor.execute("""
+    SELECT description, requirements, responsibilities, education_requirements,
+           min_experience_years, max_experience_years, language_requirements
+    FROM jobs
+    WHERE job_id = %s
+    """, (request.job_id,))
+
+    job_data = cursor.fetchone()
+    if not job_data:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    # Lấy kỹ năng từ job_skills
+    cursor.execute("""
+        SELECT skill_name
+        FROM job_skills
+        WHERE job_id = %s
+    """, (request.job_id,))
+    skill_rows = cursor.fetchall()
+    jd_skills = [row[0] for row in skill_rows]
+    skills_text = ' '.join(jd_skills)
+
+    description, requirements, responsibilities, education, min_exp, max_exp, languages = job_data
+
+    experience_years_text = f"{min_exp} đến {max_exp} năm kinh nghiệm" if min_exp or max_exp else ""
+    language_text = ', '.join(languages) if languages else ""
+
+    jd_text = f"{description} {requirements} {responsibilities} {education} {experience_years_text} {language_text} {skills_text}"
+
+
+
+    # Lưu từng phần embedding của JD
+    save_job_embedding(request.job_id, jd_text, "full_jd_embedding")
+    save_job_embedding(request.job_id, requirements or "", "requirements_embedding")
+    save_job_embedding(request.job_id, responsibilities or "", "responsibilities_embedding")
+    save_job_embedding(request.job_id, education or "", "education_embedding")
+    save_job_embedding(request.job_id, experience_years_text, "experience_embedding")
+    save_job_embedding(request.job_id, language_text, "language_embedding")
+    save_job_embedding(request.job_id, skills_text, "skills_embedding")
+
+
+    # Lấy CV embedding
     # Lấy parsed_content từ cv_content
     cursor.execute(
         """
@@ -41,18 +83,11 @@ async def calculate_match(request: MatchRequest):
     parsed_content = parsed_result[0]
     parsed_content = json.loads(parsed_content) if isinstance(parsed_content, str) else parsed_content
 
-    # Lấy JD từ bảng jobs
-    cursor.execute("SELECT description, requirements FROM jobs WHERE job_id = %s", (request.job_id,))
-    job_data = cursor.fetchone()
-    if not job_data:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    description, requirements = job_data
-    jd_text = f"{description} {requirements}"
+    
 
     # Tạo văn bản CV tổng hợp và lưu embedding full_text
     cv_full_text = make_cv_text(parsed_content)
-    cv_embedding_id = save_cv_embedding(request.cv_id, candidate_id, cv_full_text, 'full_text')
+    cv_embedding_id = save_cv_embedding(request.cv_id, candidate_id, cv_full_text, 'full_text_embedding')
 
     # Tách từng phần của CV
     mo_ta_ban_than = parsed_content.get('mo_ta_ban_than', '')
@@ -73,7 +108,7 @@ async def calculate_match(request: MatchRequest):
     all_skills = list(set(ky_nang_parsed + ky_nang_db))
     ky_nang = ' '.join(all_skills)
 
-    kinh_nghiem = ' '.join([
+    kinh_nghiem_text = ' '.join([
         clean_text(str(item.get(f, '')))
         for item in parsed_content.get('kinh_nghiem_lam_viec', [])
         for f in ['vi_tri', 'cong_ty', 'dia_diem', 'thoi_gian', 'mo_ta']
@@ -83,57 +118,55 @@ async def calculate_match(request: MatchRequest):
         for item in parsed_content.get('hoc_van', [])
         for f in ['truong', 'nganh', 'trinh_do', 'xep_loai']
     ])
-    du_an = ' '.join([
+    du_an_text = ' '.join([
         clean_text(str(item.get(f, '')))
         for item in parsed_content.get('du_an', [])
         for f in ['ten_du_an', 'vai_tro', 'mo_ta']
     ])
+    
+    kinh_nghiem = f"{kinh_nghiem_text} {du_an_text}".strip()
 
     # Lưu từng phần embedding
-    save_cv_embedding(request.cv_id, candidate_id, mo_ta_ban_than, 'mo_ta_ban_than')
-    save_cv_embedding(request.cv_id, candidate_id, ky_nang, 'ky_nang')
-    save_cv_embedding(request.cv_id, candidate_id, kinh_nghiem, 'kinh_nghiem_lam_viec')
-    save_cv_embedding(request.cv_id, candidate_id, hoc_van, 'hoc_van')
-    save_cv_embedding(request.cv_id, candidate_id, du_an, 'du_an')
+    # save_cv_embedding(request.cv_id, candidate_id, mo_ta_ban_than, 'mo_ta_ban_than_embedding')
+    save_cv_embedding(request.cv_id, candidate_id, ky_nang, 'skills_embedding')
+    save_cv_embedding(request.cv_id, candidate_id, kinh_nghiem, 'experience_embedding')
+    save_cv_embedding(request.cv_id, candidate_id, hoc_van, 'education_embedding')
 
-    # Lưu JD embedding
-    save_job_embedding(request.job_id, jd_text, 'full_jd')
 
     # Tính độ tương đồng giữa các phần
     overall_similarity = calculate_similarity(cv_full_text, jd_text)
     mo_ta_ban_than_similarity = calculate_similarity(mo_ta_ban_than, requirements) if mo_ta_ban_than else 0.0
-    ky_nang_similarity = calculate_similarity(ky_nang, requirements) if ky_nang else 0.0
-    kinh_nghiem_similarity = calculate_similarity(kinh_nghiem, requirements) if kinh_nghiem else 0.0
-    hoc_van_similarity = calculate_similarity(hoc_van, requirements) if hoc_van else 0.0
-    du_an_similarity = calculate_similarity(du_an, requirements) if du_an else 0.0
-
+    ky_nang_similarity = calculate_similarity(ky_nang, skills_text) if ky_nang else 0.0
+    kinh_nghiem_similarity = calculate_similarity(kinh_nghiem, experience_years_text) if kinh_nghiem else 0.0
+    hoc_van_similarity = calculate_similarity(hoc_van, education) if hoc_van else 0.0
+    
     weighted_score = overall_similarity
 
     # Lưu kết quả so khớp vào vector_matches
     cursor.execute(
-        """
-        INSERT INTO vector_matches (
-            job_id, candidate_id, cv_id, overall_similarity, skills_similarity,
-            experience_similarity, education_similarity, projects_similarity, weighted_score, last_calculated, cv_embedding_id,
-            match_type, computed_at
-        )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, NOW())
-        RETURNING match_id
-        """,
-        (
-            request.job_id,
-            candidate_id,
-            request.cv_id,
-            overall_similarity,
-            ky_nang_similarity,
-            kinh_nghiem_similarity,
-            hoc_van_similarity,
-            du_an_similarity,
-            weighted_score,
-            cv_embedding_id,
-            'sbert',
-        ),
+    """
+    INSERT INTO vector_matches (
+        job_id, candidate_id, cv_id, overall_similarity, skills_similarity,
+        experience_similarity, education_similarity, weighted_score, last_calculated, cv_embedding_id,
+        match_type, computed_at
     )
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, NOW())
+    RETURNING match_id
+    """,
+    (
+        request.job_id,
+        candidate_id,
+        request.cv_id,
+        overall_similarity,
+        ky_nang_similarity,
+        kinh_nghiem_similarity,
+        hoc_van_similarity,
+        weighted_score,
+        cv_embedding_id,
+        'sbert',
+    ),
+)
+
     match_id = cursor.fetchone()[0]
     conn.commit()
     cursor.close()
@@ -149,7 +182,6 @@ async def calculate_match(request: MatchRequest):
         ky_nang_similarity=ky_nang_similarity,
         kinh_nghiem_similarity=kinh_nghiem_similarity,
         hoc_van_similarity=hoc_van_similarity,
-        du_an_similarity=du_an_similarity,
     )
 
 
@@ -200,12 +232,13 @@ async def get_similarity(
     }
 
 
+
 @app.get("/api/v1/ai/job-recommendations/{candidate_id}")
 async def recommend_jobs(candidate_id: int, top_k: int = Query(5, ge=1, le=50)):
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # --- B1: Lấy CV chính của ứng viên ---
+    # --- B1: Lấy CV chính ---
     cursor.execute("""
         SELECT cv_id FROM candidate_cvs
         WHERE candidate_id = %s AND is_primary = TRUE
@@ -213,7 +246,6 @@ async def recommend_jobs(candidate_id: int, top_k: int = Query(5, ge=1, le=50)):
     """, (candidate_id,))
     row = cursor.fetchone()
 
-    # Nếu không có CV chính → fallback
     if not row:
         cursor.execute("""
             SELECT cv_id FROM candidate_cvs
@@ -224,64 +256,85 @@ async def recommend_jobs(candidate_id: int, top_k: int = Query(5, ge=1, le=50)):
         row = cursor.fetchone()
 
     if not row:
-        raise HTTPException(status_code=404, detail="No JD found for candidate")
+        raise HTTPException(status_code=404, detail="No CV found for candidate")
 
     cv_id = row[0]
 
-    # --- B2: Lấy embedding của CV (full_text) ---
+    # --- B2: Đảm bảo CV đã có embedding ---
     cv_emb = get_embedding("cv_embeddings", "cv_id", cv_id, "full_text_embedding")
     if not cv_emb:
-        raise HTTPException(status_code=404, detail="CV embedding not found")
+        # Tạo embedding từ parsed_content
+        cursor.execute("SELECT candidate_id FROM candidate_cvs WHERE cv_id = %s", (cv_id,))
+        result = cursor.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Candidate not found")
 
-    # --- B3: Lấy tất cả JD embedding ---
-    cursor.execute("SELECT job_id, full_jd_embedding FROM job_embeddings")
-    jd_rows = cursor.fetchall()
+        candidate_id_fetched = result[0]
+        cursor.execute("SELECT parsed_content FROM cv_content WHERE cv_id = %s", (cv_id,))
+        result = cursor.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Parsed content not found")
 
-    if not jd_rows:
-        return {"candidate_id": candidate_id, "cv_id": cv_id, "recommendations": []}
+        parsed_content = json.loads(result[0]) if isinstance(result[0], str) else result[0]
+        cv_text = make_cv_text(parsed_content)
+        save_cv_embedding(cv_id, candidate_id_fetched, cv_text, "full_text_embedding")
+
+        cv_emb = get_embedding("cv_embeddings", "cv_id", cv_id, "full_text_embedding")
+        if not cv_emb:
+            raise HTTPException(status_code=500, detail="Failed to generate CV embedding")
+
+    # --- B3: Lấy tất cả JD ---
+    cursor.execute("""
+        SELECT j.job_id, j.title, j.description, j.requirements, j.responsibilities,
+               j.company_id, c.company_name
+        FROM jobs j
+        LEFT JOIN companies c ON j.company_id = c.company_id
+    """)
+    all_jobs = cursor.fetchall()
 
     recommendations = []
 
-    for job_id, jd_emb in jd_rows:
+    for job in all_jobs:
+        job_id, title, desc, reqs, resps, company_id, company_name = job
+
+        # Đảm bảo JD đã có embedding
+        jd_emb = get_embedding("job_embeddings", "job_id", job_id, "full_jd_embedding")
+        if not jd_emb:
+            jd_text = f"{desc or ''} {reqs or ''} {resps or ''}".strip()
+            try:
+                save_job_embedding(job_id, jd_text, "full_jd_embedding")
+                jd_emb = get_embedding("job_embeddings", "job_id", job_id, "full_jd_embedding")
+            except Exception as e:
+                print(f"⚠️ Failed to embed JD {job_id}: {e}")
+                continue
+
         if not jd_emb:
             continue
 
-        # --- B4: Nếu đã từng match → lấy overall_similarity ---
-        cursor.execute("""
-            SELECT overall_similarity FROM vector_matches
-            WHERE cv_id = %s AND job_id = %s
-            ORDER BY last_calculated DESC
-            LIMIT 1
-        """, (cv_id, job_id))
-        match = cursor.fetchone()
+        # Tính cosine similarity
+        try:
+            sim = cos_sim(np.array(cv_emb), np.array(jd_emb)).item()
+        except Exception as e:
+            print(f"⚠️ Cosine error for job_id={job_id}: {e}")
+            continue
 
-        if match:
-            sim = match[0]
-        else:
-            # --- Nếu chưa có, tính cosine mới ---
-            try:
-                sim = cos_sim(np.array(cv_emb), np.array(jd_emb)).item()
-            except Exception as e:
-                print(f"⚠️ Cosine error for job_id={job_id}: {e}")
-                continue
-
-        recommendations.append((job_id, sim))
+        recommendations.append({
+            "job_id": job_id,
+            "title": title,
+            "group": company_name,
+            "overall_similarity": round(sim, 4)
+        })
 
     cursor.close()
     conn.close()
 
-    # --- B5: Sắp xếp giảm dần & trả về Top-K ---
-    recommendations.sort(key=lambda x: x[1], reverse=True)
-    top_k_recs = recommendations[:top_k]
-
+    # --- B4: Sắp xếp và trả về Top-K ---
+    recommendations.sort(key=lambda x: x["overall_similarity"], reverse=True)
     return {
         "candidate_id": candidate_id,
         "cv_id": cv_id,
         "top_k": top_k,
-        "recommendations": [
-            {"job_id": job_id, "overall_similarity": round(score, 4)}
-            for job_id, score in top_k_recs
-        ]
+        "recommendations": recommendations[:top_k]
     }
 
 
@@ -321,10 +374,10 @@ async def match_reasoning(application_id: int):
     cv_text = make_cv_text(parsed)
 
     sim_scores = {
-        "overall": overall,
-        "skills": skills_sim,
-        "experience": exp_sim,
-        "education": edu_sim
+        "overall": float(overall),
+        "skills": float(skills_sim),
+        "experience": float(exp_sim),
+        "education": float(edu_sim)
     }
 
     combined_text = f"{cv_text}\n\n{jd_text}"
