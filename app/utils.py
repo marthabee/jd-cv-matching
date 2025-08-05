@@ -22,7 +22,7 @@ def clean_text(text: str) -> str:
     return text
 
 
-def chunk_text(text: str, max_tokens=512) -> list:
+def chunk_text(text: str, max_tokens=128) -> list:
     tokens = tokenizer.tokenize(text)
     chunks = []
     for i in range(0, len(tokens), max_tokens):
