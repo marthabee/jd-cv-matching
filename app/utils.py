@@ -32,7 +32,7 @@ def chunk_text(text: str, max_tokens=512) -> list:
     return chunks
 
 
-def get_text_embedding(text: str, chunk_size=512) -> np.ndarray:
+def get_text_embedding(text: str, chunk_size=128) -> np.ndarray:
     cleaned = clean_text(text)
     chunks = chunk_text(cleaned, max_tokens=chunk_size)
     if not chunks:
