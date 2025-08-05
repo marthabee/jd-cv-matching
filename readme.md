@@ -95,7 +95,7 @@ GET /api/v1/ai/similarity?cv_id=123&job_id=789&section_type=ky_nang
 ## 🧼 Tiền xử lý dữ liệu CV
 
 - Xoá cụm: `"tôi"`, `"tôi là"`, `"i'm"`, `"i am"`, email, số điện thoại, tên riêng.
-- Cắt thành nhiều đoạn nhỏ ≤ 512 tokens (mô hình giới hạn).
+- Cắt thành nhiều đoạn nhỏ ≤ 128 tokens (mô hình giới hạn).
 - Lấy trung bình embedding để đại diện toàn văn bản.
 
 ---
