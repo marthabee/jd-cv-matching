@@ -6,7 +6,7 @@ from app.db import (
     save_job_embedding,
     get_embedding
 )
-from app.utils import calculate_similarity, make_cv_text, clean_text, detect_language, build_reasoning_prompt, call_groq_reasoning
+from app.utils import calculate_similarity, make_cv_text, clean_text, detect_language_from_texts, build_reasoning_prompt, call_groq_reasoning
 from sentence_transformers.util import cos_sim
 import numpy as np
 import json
@@ -380,11 +380,10 @@ async def match_reasoning(application_id: int):
         "education": float(edu_sim)
     }
 
-    combined_text = f"{cv_text}\n\n{jd_text}"
-    lang = detect_language(combined_text)
+    lang = detect_language_from_texts(jd_text, cv_text)
 
     prompt = build_reasoning_prompt(cv_text, jd_text, sim_scores, lang)
-    reasoning = call_groq_reasoning(prompt)
+    reasoning = call_groq_reasoning(prompt, lang)
 
     ai_analysis_data = {
         "language": lang,
@@ -405,6 +404,6 @@ async def match_reasoning(application_id: int):
         "cv_id": cv_id,
         "job_id": job_id,
         "language_detected": lang,
-        **sim_scores,
+        "similarity_scores": sim_scores,
         "reasoning": reasoning
     }

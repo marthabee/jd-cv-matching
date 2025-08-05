@@ -6,6 +6,7 @@ from sentence_transformers.util import cos_sim
 from langdetect import detect
 from groq import Groq
 import os
+import json
 
 
 model = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
@@ -58,12 +59,17 @@ def make_cv_text(parsed_content: dict) -> str:
     parts.extend(parsed_content.get("ky_nang", []))
     return ' '.join(parts)
 
-def detect_language(text: str) -> str:
+def detect_language_from_texts(jd_text: str, cv_text: str) -> str:
     try:
-        lang = detect(text)
-        return 'vi' if lang.startswith('vi') else 'en'
-    except:
+        lang_jd = detect(jd_text)
+        lang_cv = detect(cv_text)
+        # Ưu tiên tiếng Việt nếu cả 2 là 'vi', ngược lại dùng 'en'
+        if lang_jd == 'vi' and lang_cv == 'vi':
+            return 'vi'
         return 'en'
+    except Exception:
+        return 'en'  # fallback
+
 
 def build_reasoning_prompt(cv_text: str, jd_text: str, sim: dict, lang: str) -> str:
     def fmt(score):
@@ -91,7 +97,7 @@ Hãy thực hiện các bước sau:
 === Mô tả công việc ===
 {jd_text}
 
-Chú ý: Trả về dưới dạng  markdown, sử dụng các tiêu đề và danh sách để làm rõ các phần khác nhau. Luôn phản hồi hoàn toàn bằng tiếng Việt mượt mà.
+Chú ý: Luôn phản hồi hoàn toàn bằng tiếng Việt mượt mà. Và nội dung phản hồi phải bao gồm tất cả các phần đã nêu ở trên, không được bỏ sót phần nào. Trả về dạng văn bản rõ ràng, mạch lạc và dễ hiểu, có thể sử dụng các ký hiệu như 🔹, ⚠️, ✅ để phân biệt các phần khác nhau.
 """
     else:
         prompt = f"""You are a senior recruitment specialist with deep expertise in evaluating candidates. Below is a candidate's CV and a Job Description (JD), along with similarity scores (calculated using cosine similarity) that reflect alignment in key areas: skills, experience, education, and overall.
@@ -113,27 +119,24 @@ Cosine Similarity Scores:
 === Job Description ===
 {jd_text}
 
-Note: Respond in markdown format with clear headings and lists. Always reply in English.
+Note: Always reply in English. Responses must include all the sections mentioned above, without omitting any part. respond in clear, coherent text, using symbols like 🔹, ⚠️, ✅ to differentiate the sections.
 """
     return prompt
 
 
-def call_groq_reasoning(prompt: str) -> str:
+def call_groq_reasoning(prompt: str, lang: str) -> dict:
     client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-    if detect_language(prompt) == "vi":
-        lang = "vi"
+
+    if lang == "vi":
+        system_prompt = (
+            """Bạn là một chuyên gia tuyển dụng có kiến thức sâu rộng về đánh giá hồ sơ ứng viên.
+                       """)
     else:
-        lang = "en"
-    system_prompt = (
-        "Bạn là một chuyên gia tuyển dụng có kiến thức sâu rộng về đánh giá hồ sơ ứng viên. "
-        "Hãy phân tích chi tiết mức độ phù hợp giữa CV và JD, dựa trên điểm tương đồng cosine và nội dung cụ thể. "
-        "Luôn phản hồi bằng tiếng Việt."
-        if lang == "vi"
-        else
-        "You are a senior talent acquisition specialist with deep expertise in candidate evaluation. "
-        "Analyze in detail the relevance between the CV and the Job Description, based on cosine similarity scores and content. "
-        "Always respond in English."
-    )
+        system_prompt = (
+            """You are a recruitment expert with deep knowledge in evaluating candidate resumes."""
+            
+        )
+
     chat_completion = client.chat.completions.create(
         model="llama3-8b-8192",
         messages=[
@@ -141,4 +144,7 @@ def call_groq_reasoning(prompt: str) -> str:
             {"role": "user", "content": prompt}
         ]
     )
-    return chat_completion.choices[0].message.content
+
+    content = chat_completion.choices[0].message.content.strip()
+
+    return content

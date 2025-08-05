@@ -320,7 +320,10 @@ CREATE TABLE question_answers (
     result_id BIGINT REFERENCES test_results(result_id) ON DELETE CASCADE,
     question_id BIGINT REFERENCES test_questions(question_id),
     answer_text TEXT,
+    score DECIMAL(5,2),
     is_correct BOOLEAN,
+    comment TEXT,
+    suggestion TEXT,
     points_earned DECIMAL(5,2),
     time_taken_seconds INT,
     submitted_at TIMESTAMP DEFAULT NOW()
